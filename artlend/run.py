@@ -94,52 +94,60 @@ def main():
     charge_rows, borrower_rows = [], []
     for i, c in enumerate(cands, 1):
         num = c["company_number"]
-        charges = ch.get_all(f"/company/{num}/charges")
-        if i % 25 == 0:
-            print(f"  {i}/{len(cands)} checked, {len(borrower_rows)} with charges so far", flush=True)
-        if not charges:
-            continue
-        profile = ch.get(f"/company/{num}") or {}
-        name = profile.get("company_name") or c.get("company_name", num)
-        sics = set(profile.get("sic_codes") or c.get("sic_codes") or [])
-        art_biz = bool(sics & ART_SICS) or bool(ART_NAME.search(name))
-        officers = ch.get_all(f"/company/{num}/officers")
-        own_names = [name] + [p.get("name", "") for p in profile.get("previous_company_names") or []]
-
-        labels = defaultdict(int)
-        for chg in charges:
-            desc = (chg.get("particulars") or {}).get("description", "")
-            text, source = "", "none"
-            if args.deeds and not (args.outstanding_only and chg.get("status") != "outstanding"):
-                text, source = deed_for(ch, num, chg, args.ocr)
-            raw_lenders = [p.get("name", "") for p in chg.get("persons_entitled") or []]
-            label, terms, snip = classify(text, desc, art_biz, own_names, raw_lenders)
-            labels[label] += 1
-            lenders = [normalise_lender(n) for n in raw_lenders]
-            charge_rows.append({
-                "company_number": num, "company_name": name,
-                "charge_code": chg.get("charge_code", ""),
-                "created_on": chg.get("created_on", ""), "status": chg.get("status", ""),
-                "lenders": "; ".join(lenders),
-                "fixed": (chg.get("particulars") or {}).get("contains_fixed_charge", ""),
-                "floating_all": (chg.get("particulars") or {}).get("floating_charge_covers_all", ""),
-                "art_label": label, "art_terms": "; ".join(terms),
-                "evidence": snip[:300], "deed_text_source": source,
-            })
-
-        score, reasons = stress_flags(profile, charges, officers)
-        borrower_rows.append({
-            "company_number": num, "company_name": name,
-            "status": profile.get("company_status", ""),
-            "art_business": art_biz,
-            "charges_total": len(charges),
-            "charges_outstanding": sum(1 for x in charges if x.get("status") == "outstanding"),
-            "art_named": labels["art_named"], "art_likely": labels["art_likely"],
-            "stress_score": score, "stress_reasons": "; ".join(reasons),
-            "parent": parent_company(ch, num),
-        })
+        try:
+            process_company(ch, args, c, num, i, cands, charge_rows, borrower_rows)
+        except Exception as e:  # one bad company shouldn't kill a long run
+            print(f"  skipped {num}: {type(e).__name__}: {str(e)[:120]}", flush=True)
 
     write_outputs(charge_rows, borrower_rows)
+
+
+def process_company(ch, args, c, num, i, cands, charge_rows, borrower_rows):
+    """Fetch one company's charges, read the deeds and score it."""
+    charges = ch.get_all(f"/company/{num}/charges")
+    if i % 25 == 0:
+        print(f"  {i}/{len(cands)} checked, {len(borrower_rows)} with charges so far", flush=True)
+    if not charges:
+        return
+    profile = ch.get(f"/company/{num}") or {}
+    name = profile.get("company_name") or c.get("company_name", num)
+    sics = set(profile.get("sic_codes") or c.get("sic_codes") or [])
+    art_biz = bool(sics & ART_SICS) or bool(ART_NAME.search(name))
+    officers = ch.get_all(f"/company/{num}/officers")
+    own_names = [name] + [p.get("name", "") for p in profile.get("previous_company_names") or []]
+
+    labels = defaultdict(int)
+    for chg in charges:
+        desc = (chg.get("particulars") or {}).get("description", "")
+        text, source = "", "none"
+        if args.deeds and not (args.outstanding_only and chg.get("status") != "outstanding"):
+            text, source = deed_for(ch, num, chg, args.ocr)
+        raw_lenders = [p.get("name", "") for p in chg.get("persons_entitled") or []]
+        label, terms, snip = classify(text, desc, art_biz, own_names, raw_lenders)
+        labels[label] += 1
+        lenders = [normalise_lender(n) for n in raw_lenders]
+        charge_rows.append({
+            "company_number": num, "company_name": name,
+            "charge_code": chg.get("charge_code", ""),
+            "created_on": chg.get("created_on", ""), "status": chg.get("status", ""),
+            "lenders": "; ".join(lenders),
+            "fixed": (chg.get("particulars") or {}).get("contains_fixed_charge", ""),
+            "floating_all": (chg.get("particulars") or {}).get("floating_charge_covers_all", ""),
+            "art_label": label, "art_terms": "; ".join(terms),
+            "evidence": snip[:300], "deed_text_source": source,
+        })
+
+    score, reasons = stress_flags(profile, charges, officers)
+    borrower_rows.append({
+        "company_number": num, "company_name": name,
+        "status": profile.get("company_status", ""),
+        "art_business": art_biz,
+        "charges_total": len(charges),
+        "charges_outstanding": sum(1 for x in charges if x.get("status") == "outstanding"),
+        "art_named": labels["art_named"], "art_likely": labels["art_likely"],
+        "stress_score": score, "stress_reasons": "; ".join(reasons),
+        "parent": parent_company(ch, num),
+    })
 
 
 def write_csv(path, rows):

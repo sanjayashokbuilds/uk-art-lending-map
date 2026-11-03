@@ -47,7 +47,11 @@ class CHClient:
             return json.loads(cp.read_text())
         for attempt in range(5):
             self._wait()
-            r = self.session.get(url, params=params, timeout=30)
+            try:
+                r = self.session.get(url, params=params, timeout=30)
+            except (requests.Timeout, requests.ConnectionError):
+                time.sleep(10 * (attempt + 1))  # flaky wifi: wait and retry
+                continue
             if r.status_code == 429:
                 time.sleep(30 * (attempt + 1))
                 continue
@@ -58,7 +62,7 @@ class CHClient:
             data = r.json()
             cp.write_text(json.dumps(data))
             return data
-        raise RuntimeError(f"Rate limited too many times: {url}")
+        raise RuntimeError(f"Gave up after 5 tries: {url}")
 
     def get_all(self, path, key="items", page_size=100, params=None):
         """Page through a list endpoint."""
@@ -83,12 +87,16 @@ class CHClient:
             return dest
         for attempt in range(5):
             self._wait()
-            r = self.session.get(
-                document_metadata_url.rstrip("/") + "/content",
-                headers={"Accept": "application/pdf"},
-                timeout=60,
-                allow_redirects=True,  # requests drops auth on the S3 redirect
-            )
+            try:
+                r = self.session.get(
+                    document_metadata_url.rstrip("/") + "/content",
+                    headers={"Accept": "application/pdf"},
+                    timeout=60,
+                    allow_redirects=True,  # requests drops auth on the S3 redirect
+                )
+            except (requests.Timeout, requests.ConnectionError):
+                time.sleep(10 * (attempt + 1))
+                continue
             if r.status_code == 429:
                 time.sleep(30 * (attempt + 1))
                 continue
